@@ -6,7 +6,7 @@ I chose PHP because I'm intimately familiar with it and it's a terrible language
 
 My hypothesis is that by writing PHP like Go, though not just naively translating Go idioms, borrowing patterns from its standard library, and ignoring all of PHP's language features and builtins, you'll end up with better PHP than if you wrote PHP like PHP. I'd also wager Go-like PHP will perform at least as well as PHP-ic PHP, if not better.
 
-Before reading this, see <https://github.com/AndrewLivingston/mr-http-service>, which provides companion code connected to timecodes in the video recording of a GopherCon talk he gave on writing HTTP services.
+Before reading this, see <https://github.com/AndrewLivingston/mr-http-service>, which provides companion code connected to timecodes in a video recording of a GopherCon talk Mat Ryer gave on writing HTTP services.
 
 ## main.php
 
