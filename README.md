@@ -2,9 +2,9 @@
 
 This is an experiment where I take some of Mat Ryer's Go code and translate it into PHP to judge whether the insights that inspired Go's (and its standard library's) design are at all generalizeable.
 
-I chose PHP because I'm intimately familiar with it and it's a terrible language. In particular, it has a bafflingly poor type system and (partially as a result of its poor type system) every one of its builtins not only does _all the things_ it does them in surprising ways. What should be simple functions like `array_map` are instead are loaded footguns.
+I chose PHP because I'm intimately familiar with it and it's a terrible language. In particular, it has a bafflingly poor type system and (partially as a result of its poor type system) every one of its builtins not only does _all the things_ it does them in surprising ways. Everywhere you turn, you find that what should be a simple family of functions (`array_map`, `array_filter`, and `array_reduce` for example) is instead a bunch of loaded footguns.
 
-My hypothesis is that by writing PHP like Go, though not just naively translating Go idioms, borrowing patterns from its standard library, and ignoring all of PHP's language features and builtins, you'll end up with better PHP than if you wrote PHP like PHP. I'd also wager Go-like PHP will perform at least as well as PHP-ic PHP, if not better.
+My hypothesis is that by writing PHP somewhat like Go (and not just naively translating Go idioms), borrowing patterns from Go's standard library, and ignoring as many of PHP's language features and builtins as you can, you'll end up with better PHP than if you wrote PHP like PHP. I'd also wager Go-like PHP will perform at least as well as PHP-ic PHP, if not better.
 
 Before reading this, see <https://github.com/AndrewLivingston/mr-http-service>, which provides companion code connected to timecodes in a video recording of a GopherCon talk Mat Ryer gave on writing HTTP services.
 
@@ -13,10 +13,6 @@ Before reading this, see <https://github.com/AndrewLivingston/mr-http-service>, 
 [mr-http-service/main.go](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go)
 
 #### The main function
-
-[mr-http-service main()](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L14)
-
-The main function can be translated naively (mostly) and look pretty reasonable, at least to those of us who prefer to eschew the current Java-esque OO style in PHP and force the language to live up to its (half-true) claim to have first-class functions.
 
 ###### Go
 ```go
@@ -27,6 +23,9 @@ func main() {
     }
 }
 ```
+(From [mr-http-service main()](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L14))
+
+The main function can be translated naively (mostly) and look pretty reasonable, at least to those of us who prefer to eschew the current Java-esque OO style in PHP and force the language to live up to its half-true claim to have first-class functions (more on that later).
 
 ##### PHP
 ```php
@@ -39,7 +38,7 @@ function main(): void {
 }
 ```
 
-The one important difference is that PHP handles errors errors with `try`/`catch`. You _can_ pass exception objects around as values but, unlike the Go compiler, PHP won't complain if you fail to handle an exception unless you throw it. Ie, a more naive translation makes it easy to shoot ourselves in the foot:
+The one important difference is that PHP handles errors with `try`/`catch`. You _can_ pass exception objects around as values but, unlike the Go compiler, PHP won't complain if you fail to handle an exception that's never thrown. A more naive translation makes it easy to shoot ourselves in the foot.
 
 ```php
 function main(): void {
@@ -49,9 +48,7 @@ function main(): void {
 }
 ```
 
-####
-
-Here PHP has to diverge more from the go code.
+#### run and setupDatabase functions
 
 ##### Go
 ```go
@@ -64,6 +61,11 @@ func run() (err error) {
     // ...
 }
 ```
+(From [mr-http-service run()](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L21))
+
+I'd argue that pulling all but last-resort error handling out of your `main` function and into a `run` function is a good idea in any language, even if one that uses exceptions. So this pattern is something I'd adopt from Go if I wasn't already using it.
+
+But in `run` PHP has to diverge more from the go code than it had to in `main`.
 
 ###### PHP
 ```php
@@ -81,7 +83,7 @@ function run(): void {  // throws
 }
 ```
 
-Using `finally` instead of `defer` isn't a big difference: `defer` is basically a function-wide `finally`. In fact, if we didn't want `dbtidy` appearing in every `finally` block in `run` and also at the end, we could (and probably would), handle it in where `run` is called: in `main`.
+Using `finally` instead of `defer` isn't a big difference: `defer` is basically a function-scoped `finally`. In fact, if we didn't want `dbtidy` appearing in every `finally` block in `run` and also at the end, we could (and probably would), call it in a `finally` block where `run` is called--in this case inside `main`.
 
 ```php
 function main(): void {
@@ -95,11 +97,11 @@ function main(): void {
 }
 ```
 
-Another minor difference is that `Errors\wrap` (presumably an analogue to Dave Cheney's `errors.Wrap`) has to accept an exception class as its third argument, otherwise it wouldn't know which exception class to wrap the previous error in. Ah, for the simplicity of Go with its single `Error` interface. I've provided the base exception class, `Exception`.
+Another minor difference is that `Errors\wrap` (which I would write as an analogue to Dave Cheney's [`errors.Wrap`](https://github.com/pkg/errors/blob/master/errors.go#L184)) has to accept an exception class as its third argument, otherwise it wouldn't know which exception class to wrap the previous error in. Ah, for the simplicity of Go with its single `Error` interface. PHP's `Throwable` interface is similar, but as usual inheritance means we can't have nice things. So I added the class parameter and here I've provided it with th base exception class, `Exception`.
 
-I could make this class argument to `wrap` optional with a default of `Exception`, and many PHP devs might, but I'm not a fan of optional arguments in general. When I'm considering adding parameters to a function I prefer to be forced to decide whether I need a config struct/object or whether I need more functions.
+(I could make this class argument to `wrap` optional with a default of `Exception`, and many PHP devs might, but I'm not a fan of optional arguments in general. When I'm considering adding parameters to a function I prefer to be forced to decide whether I need a config struct/object or whether I need more functions.)
 
-The big difference beetween Go and PHP here is that  `setupDatabase` only returns a `DbConn` instead of returning both a `DbConn` and a `dbtidy` cleanup function. To see why, consider a more naive translation.
+The big difference beetween Go and PHP here is that `setupDatabase` only returns a `DbConn` instead of returning both a `DbConn` and a `dbtidy` cleanup function. To see why, consider a more naive translation.
 
 ```php
 function run(): void {  // throws
