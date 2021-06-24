@@ -42,7 +42,7 @@ The one important difference is that PHP handles errors with `try`/`catch`. You 
 
 ```php
 function main(): void {
-    $err = run(); // run() returns \Throwable
+    $err = run(); // run() returns Throwable
     // ... oops, forgot to:
     // if ($err) exit($err->getMessage())
 }
@@ -73,8 +73,8 @@ function run(): void {  // throws
     try {
         $db = setupDatabase();
     } catch (\Throwable $e) {
-        throw \Errors\wrap(
-            $e, 'setup database', \Exception::class
+        throw Errors\wrap(
+            $e, 'setup database', Exception::class
         );
     } finally {
         dbtidy();
@@ -108,7 +108,7 @@ function run(): void {  // throws
     try {
         list($db, $dbtidy) = setupDatabaseNaive();
     } catch (\Throwable $e) {
-        throw \Errors\wrap($e, 'setup database', get_class($e));
+        throw Errors\wrap($e, 'setup database', get_class($e));
     } finally {
         $dbtidy();
     }
@@ -116,7 +116,7 @@ function run(): void {  // throws
 }
 
 function setupDatabaseNaive(): array {
-    return [new DbConn, new \Exception];
+    return [new DbConn, new Exception];
 }
 ```
 
@@ -141,3 +141,272 @@ null
 Because `setupDatabaseNaive` threw before its result could be assigned to `$dbtidy`, that variable never existed. Note that this is not a problem for PHP (version 8): it just logs a warning and fumbles onward taking the value of the undefined variable to be `null`. (Did I mention PHP is a terrible language?)
 
 So we have little option but to make `dbtidy` a named function and call it explicitly. This may or may not be a problem in any given use case, but it does mean in some cases you can't stucture the code the way you think is best.
+
+#### Server
+
+[mr-http-service server type](https://github.com/AndrewLivingston/mr-http-service/blob/main/server.go#L8)
+[mr-http-service server creation](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L27)
+
+Mat suggests using a "server" struct to hold what might otherwise be global variables like the database connection. This is another pattern that makes sense in any language.
+
+##### Go
+```go
+type server struct {
+    db     *dbConn
+    router *router
+    email  EmailSender
+}
+
+// ServeHTTP makes server satisfy the http.Handler
+// interface
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    s.router.ServeHTTP(w, r)
+    // ^ delegates to router for implementation. Also,
+    // ServeHTTP is intended to panic on error, with
+    // recovery happening in middleware
+}
+```
+
+Mat wasn't explicit, but I assume that `EmailSender` is an interface because it's an agent noun (ends in "er") and and it isn't a pointer. `router` is an agent noun, but the fact that `s.router` is a pointer tells us that `router` is a type.
+
+We can write a PHP version that is nearly identical and is (almost) idomatic PHP.
+
+##### PHP
+```php
+class Server implements Http\Handler {
+    public DbConn $db;
+    public Router $router;
+    public EmailSender $email;
+
+    // serveHTTP method from Http\Handler
+    public function serveHTTP(ResponseWriter $w, Request $r): void {
+        $this->router->serveHTTP($w, $r);
+        // ^ assume this call can
+        // throw new Exception(
+        //     'throwing matches Go panic behavior'
+        // );
+    }
+}
+```
+
+PHP uses doesn't have pointers, so there's no hint from the syntax that `DbConn` and `Router` are types (classes, specifically) while EmailSender is an interface.
+
+Unfortunately, PHP types must declare that they implement an interface. But that's really the only difference. Since `ServeHTTP` is one of relatively few functions in the Go standard library that is designed to panic instead of returning an error, PHP's error handling idiom is appropriate here.
+
+Matt shows [one way of populating the server struct inside run()](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L27).
+
+```go
+srv := &server{
+    db:     db, // from setup   Database
+    router: &router{},
+    email:  emailSender{}, // concrete implementation
+}
+```
+
+This method avoids using a constructor, which is nicely explicit. There's nothing hidden from you behind a function. You can do this in PHP, but it's not idiomatic.
+
+```php
+$srv = new Server;
+$srv->db = $db;
+$srv->router = new Router;
+$srv->email = new EmailSenderConcrete;
+```
+
+One problem is that at least some PHP static type checkers may not detect that the wrong type of variable is being assigned, say, a string for `router`, which then becomes a runtime error. So it's best to follow the PHP idiom of providing a constructor.
+
+Mat says he always seems to end up with [a constructor for his server types](https://github.com/AndrewLivingston/mr-http-service/blob/main/server.go#L20) since some setup/initialization is required.
+
+```go
+func newServer() *server {
+    s := &server{}
+    // ^ leaves dependencies as nil (could be passed as
+    // arguments if not many, but better to explicitly
+    // assign later)
+    s.routes() // more on this later
+    return s
+}
+```
+
+So it's not a big leap from Mat's parameter-less constructor to a PHP constructor with parameters.
+
+```php
+class Server implements Http\Handler {
+    public function __construct(
+        public DbConn $db,
+        public Router $router,
+        public EmailSender $email,
+    ) {
+        routes($this);
+    }
+
+    public function serveHTTP(ResponseWriter $w, Request $r): void {
+        $this->router->serveHTTP($w, $r);
+    }
+}
+
+// in run()
+$srv = new Server(
+    db: $db,
+    router: new Router,
+    email: new EmailSenderConcrete,
+);
+```
+
+#### The routes function and handlers
+
+[mr-http-service routes.go](https://github.com/AndrewLivingston/mr-http-service/blob/main/routes.go)
+
+Mat puts all his routes and their registration inside a separate routes.go
+```go
+func (s *server) routes() {
+    s.router.Get("/api/", s.handleAPI())
+    s.router.Get("/about", s.handleAbout())
+    s.router.Get("/", s.handleIndex())
+    s.router.Post("/one", s.handleGreeting("Hello %s"))
+    // ...
+}
+
+// handlers have the form
+func (s *server) handleSomething(params...) http.HandlerFunc {
+    // ...
+    return func(w http.ResponseWriter, r *http.Request) {
+        // ...
+    }
+}
+
+// concrete example
+func (s *server) handleGreeting(format string) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        name := r.FormValue("name")
+        greeting := fmt.Sprintf(format, name)
+        fmt.Fprint(w, greeting)
+        emailAddress := s.db.Query(
+            "SELECT address FROM emails WHERE name = ?",
+            name,
+        )
+        s.email.Send(emailAddress, "Geetings!", greeting)
+    }
+}
+
+// ...
+```
+
+Go's syntax and semantics for methods (single dispatch polymorphic functions) is one of my favorite things about the language.
+
+```go
+func (t *dispatchType) name(params...) returnType {
+    body
+}
+```
+
+1. You don't declare a method on the type as you do in OO languages.
+1. You don't even have to declare a method in the same file as the type.
+1. The syntax makes it _very_ clear which paramater is the dispatch parameter.
+1. You can dispatch on _any_ named type, including functions, maps, slices, etc! You can even do:
+
+```go
+type myInt int
+
+func (n *myInt) successor() int {
+    return int(*n) + 1
+}
+
+func main() {
+    n := myInt(5)
+    fmt.Println(n.successor())
+    // 6
+}
+```
+
+Obviously methods on functions and slices are more useful than the above, but it's neat that you can define methods on an `int` alias.
+
+Mat uses this feature of Go to allow him to both:
+
+* make handlers methods on the `server` type to give them easy access to the db, router, emailer, etc, while reserving the handlers' parameters for additional values or dependencies each handler might need; and
+* declare handlers wherever it makes sense to declare them, whether in `routes.go` or elsewhere.
+
+PHP doesn't allow both these things at the same time. Which is unfortunate, but not the end of the world. Since you certainly would not put all your apps' handlers onto the `Server` class, the obvious thing to do is make the first argument to every handler a `Server`.
+
+In the following PHP code, assume I've written the interfaces `Http\ResponseWriter` and `Http\Request`.
+
+```php
+function routes(Server $s): void {
+    $s->router->get(
+        '/api/',
+        handleGreeting($s, 'Hello, %s!')
+    );
+    // ...
+}
+
+// handlers have the form
+function handleSomething(Server $s, ...$params) Closure {
+    // ...
+    return function(w http.ResponseWriter, r *http.Request) use ($params) {
+        // ...
+    }
+}
+
+// a concrete example
+function handleGreeting(Server $s, string $format): Closure {
+    return function(Http\ResponseWriter $w, Http\Request $r) use ($s, $format) {
+        $name = $r->formValue("name");
+        $greeting = sprintf($format, $name);
+        $w->write($greeting);
+        $emailAddress = $s->db->query(
+            "SELECT address FROM emails WHERE name = ?",
+            $name,
+        );
+        $s->email->send($emailAddress, "Greetings!", $greeting);
+    };
+}
+```
+
+It's a little clunkier, particularly because I have to explicitly `use` the dependency parameters, but otherwise doesn't look bad.
+
+But...it is bad. It's all thanks to the return type `Closure`. Similar to the restrictions on array type declarations, function type declarations are too general to be very useful: you can't declare the parameter types or return type of the function, so returning any anonymous function of any kind will make PHP happy—runtime-error happy.
+
+If you're not familiar with Go, you may be asking, "so...what's an `http.HandlerFunc`?" Buckle up, because we're about to leverage Go's dispatch semantics to follow in the Go standard library's footsteps and do something awesome.
+
+Go's `http` package provides a `Handler` interface.
+
+```go
+package http
+
+type Handler interface {
+    ServeHTTP(ResponseWriter, *Request) // panic on error
+}
+```
+
+`ResponseWriter` is itself an interface declaring a `Write` method, and `Request` is a concrete type in the `http` package. But we won't concern ourselves with them right now. Suffice it to say that `Request` is a model of an http request, and `ResponseWriter` is responsible for responding to the http request.
+
+Because it's an interface, you're free to write your own type, say a struct of some kind, that implements `Handler`. But, since most request handlers are most clearly written as simple functions, Go declares a concrete type, `HandlerFunc`...that implements `Handler`! I never get tired of thinking about this. It's just so good.
+
+```go
+// The HandlerFunc type is an adapter to allow the use of
+// ordinary functions as HTTP handlers. If f is a function
+// with the appropriate signature, HandlerFunc(f) is a
+// Handler that calls f.
+type HandlerFunc func(ResponseWriter, *Request)
+
+// ServeHTTP calls f(w, r).
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
+    f(w, r)
+}
+```
+
+This is the actual source code for `HandlerFunc` in <https://golang.org/src/net/http/server.go>. You can define concrete methods on _interfaces as well as types_ in Go, so by defining that very simple `ServeHTTP`, a `HandlerFunc` is also a `Handler`.
+
+Furthermore, since `HandlerFunc` is just a type alias for `func(ResponseWriter, *Request)`, any function with that signature is a `HandlerFunc`
+
+Recap:
+
+1. Go's `http` package uses the `Handler` interface everywhere in its implementation.
+1. `HandlerFunc` is a type alias for `func(ResponseWriter, *Request)`, so any function with that signature is a `HandlerFunc`.
+2. The `ServeHTTP` method is defined on a `HandlerFunc`, so a `HandlerFunc` is a `Handler`.
+3. Therefore, any function with signature `func(ResponseWriter, *Request)` is an `http.Handler`. QED.
+
+Go has done more than any other language I've used to demonstrate that, when done correctly, simple, static typing can be as flexible as dynamic typing. The extra structure might might make a dynamic-loving dev think, "why not just use a dynamic language?" But, dynamic dev using a dynamic language, you have to use TDD and write eight unit tests for every function before you can actually write that function lest your code explode into bug meat in production. Your first draft design for a module's API may suck, but since you developed using TDD, you'll never change it. You'll just live with the suck. Also, you don't actually do TDD because nobody does.
+
+On the other hand, using Go I can play around with my API until I get it right, try implementing it, change my mind, and keep iterating (quickly, since Go's compiler is blazing fast). Then when I'm happy, I write a test or two to ensure I don't have null pointer errors, index out of bounds errors, or value errors.
+
+(What do you call a large codebase written in a dynamic language? A ducksterfuck.)
