@@ -12,9 +12,9 @@ Before reading this, see <https://github.com/AndrewLivingston/mr-http-service>, 
 
 [mr-http-service/main.go](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go)
 
-#### The main function
+### The main function
 
-###### Go
+##### Go
 ```go
 func main() {
     if err := run(); err != nil {
@@ -27,7 +27,7 @@ func main() {
 
 The main function can be translated naively (mostly) and look pretty reasonable, at least to those of us who prefer to eschew the current Java-esque OO style in PHP and force the language to live up to its half-true claim to have first-class functions (more on that later).
 
-##### PHP
+#### PHP
 ```php
 function main(): void {
     try {
@@ -48,9 +48,9 @@ function main(): void {
 }
 ```
 
-#### run and setupDatabase functions
+### run and setupDatabase functions
 
-##### Go
+#### Go
 ```go
 func run() (err error) {
     db, dbtidy, err := setupDatabase()
@@ -67,7 +67,7 @@ I'd argue that pulling all but last-resort error handling out of your `main` fun
 
 But in `run` PHP has to diverge more from the go code than it had to in `main`.
 
-###### PHP
+##### PHP
 ```php
 function run(): void {  // throws
     try {
@@ -142,14 +142,14 @@ Because `setupDatabaseNaive` threw before its result could be assigned to `$dbti
 
 So we have little option but to make `dbtidy` a named function and call it explicitly. This may or may not be a problem in any given use case, but it does mean in some cases you can't stucture the code the way you think is best.
 
-#### Server
+### Server
 
 [mr-http-service server type](https://github.com/AndrewLivingston/mr-http-service/blob/main/server.go#L8)
 [mr-http-service server creation](https://github.com/AndrewLivingston/mr-http-service/blob/main/main.go#L27)
 
 Mat suggests using a "server" struct to hold what might otherwise be global variables like the database connection. This is another pattern that makes sense in any language.
 
-##### Go
+#### Go
 ```go
 type server struct {
     db     *dbConn
@@ -171,7 +171,7 @@ Mat wasn't explicit, but I assume that `EmailSender` is an interface because it'
 
 We can write a PHP version that is nearly identical and is (almost) idomatic PHP.
 
-##### PHP
+#### PHP
 ```php
 class Server implements Http\Handler {
     public DbConn $db;
@@ -252,7 +252,7 @@ $srv = new Server(
 );
 ```
 
-#### The routes function and handlers
+### The routes function and handlers
 
 [mr-http-service routes.go](https://github.com/AndrewLivingston/mr-http-service/blob/main/routes.go)
 
@@ -364,7 +364,7 @@ It's a little clunkier, particularly because I have to explicitly `use` the depe
 
 But...it is bad. It's all thanks to the return type `Closure`. Similar to the restrictions on array type declarations, function type declarations are too general to be very useful: you can't declare the parameter types or return type of the function, so returning any anonymous function of any kind will make PHP happy—runtime-error happy.
 
-##### A digression
+#### A digression
 
 If you're not familiar with Go, you may be asking, "so...what's an `http.HandlerFunc`?" Buckle up, because we're about to leverage Go's dispatch semantics to follow in the Go standard library's footsteps and do something awesome.
 
@@ -413,7 +413,7 @@ On the other hand, using Go I can play around with my API until I get it right, 
 
 (What do you call a large codebase written in a duck-typed language? A ducksterfuck.)
 
-##### PHP can't have nice things, or, PHP needs Handlers
+#### PHP can't have nice things, or, PHP needs Handlers
 
 Specifically, PHP can't have a `HandlerFunc`. To get statically checked handlers, we need to write a `Handler` interface and then make concrete implementations.
 
@@ -461,7 +461,7 @@ Because we're using such a simple interface you'd hope nobody who came to this c
 
 It should be.
 
-#### Middleware
+### Middleware
 
 [mr-http-service middleware](https://github.com/AndrewLivingston/mr-http-service/blob/main/middleware.go#L5-L28)
 
@@ -545,7 +545,7 @@ Once again PHP proves that it's able to add more complexity than Go at the expen
 
 Either way I'll never have to see a handler class for middleware show up directly in `routes`.
 
-#### But would you really rewrite Go standard library interfaces in PHP?
+### But would you really rewrite Go standard library interfaces in PHP?
 
 My answer is an unqualified yes. Let me show you one of my other favorite things in Go's standard library.
 
