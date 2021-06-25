@@ -262,7 +262,7 @@ func (s *server) routes() {
     s.router.Get("/api/", s.handleAPI())
     s.router.Get("/about", s.handleAbout())
     s.router.Get("/", s.handleIndex())
-    s.router.Post("/one", s.handleGreeting("Hello %s"))
+    s.router.Post("/greet", s.handleGreeting("Hello %s"))
     // ...
 }
 
@@ -331,10 +331,7 @@ In the following PHP code, assume I've written the interfaces `Http\ResponseWrit
 
 ```php
 function routes(Server $s): void {
-    $s->router->get(
-        '/api/',
-        handleGreeting($s, 'Hello, %s!')
-    );
+    $s->router->post('/greet', handleGreeting($s, 'Hello, %s!'));
     // ...
 }
 
@@ -351,7 +348,9 @@ function handleGreeting(Server $s, string $format): Closure {
     return function(Http\ResponseWriter $w, Http\Request $r) use ($s, $format) {
         $name = $r->formValue("name");
         $greeting = sprintf($format, $name);
+
         $w->write($greeting);
+
         $emailAddress = $s->db->query(
             "SELECT address FROM emails WHERE name = ?",
             $name,
@@ -365,6 +364,8 @@ It's a little clunkier, particularly because I have to explicitly `use` the depe
 
 But...it is bad. It's all thanks to the return type `Closure`. Similar to the restrictions on array type declarations, function type declarations are too general to be very useful: you can't declare the parameter types or return type of the function, so returning any anonymous function of any kind will make PHP happy—runtime-error happy.
 
+##### A digression
+
 If you're not familiar with Go, you may be asking, "so...what's an `http.HandlerFunc`?" Buckle up, because we're about to leverage Go's dispatch semantics to follow in the Go standard library's footsteps and do something awesome.
 
 Go's `http` package provides a `Handler` interface.
@@ -373,7 +374,8 @@ Go's `http` package provides a `Handler` interface.
 package http
 
 type Handler interface {
-    ServeHTTP(ResponseWriter, *Request) // panic on error
+    ServeHTTP(ResponseWriter, *Request)
+    // ^ panic on error
 }
 ```
 
@@ -409,4 +411,182 @@ Go has done more than any other language I've used to demonstrate that, when don
 
 On the other hand, using Go I can play around with my API until I get it right, try implementing it, change my mind, and keep iterating (quickly, since Go's compiler is blazing fast). Then when I'm happy, I write a test or two to ensure I don't have null pointer errors, index out of bounds errors, or value errors.
 
-(What do you call a large codebase written in a dynamic language? A ducksterfuck.)
+(What do you call a large codebase written in a duck-typed language? A ducksterfuck.)
+
+##### PHP can't have nice things, or, PHP needs Handlers
+
+Specifically, PHP can't have a `HandlerFunc`. To get statically checked handlers, we need to write a `Handler` interface and then make concrete implementations.
+
+```php
+namespace Http;
+
+interface Handler {
+    public function serveHTTP(ResponseWriter $w, Request $r): void;
+    // ^ throw on error
+}
+
+// elsewhere
+final class HandlerGreet implements Http\Handler {
+    public function __construct(
+        private Server $server,
+        private string $format,
+    ) {}
+
+    public function serveHTTP(Http\ResponseWriter $w, Http\Request $r): void {
+        $s = $this->s;
+        $format = $this->format;
+        $name = $r->formValue("name");
+        $greeting = sprintf($format, $name);
+
+        $w->write($greeting);
+
+        $emailAddress = $s->db->query(
+            "SELECT address FROM emails WHERE name = ?",
+            $name,
+        );
+        $s->email->send($emailAddress, "Greetings!", $greeting);
+    }
+}
+
+// routes.php
+function routes(Server $s): void {
+    $s->router->post('/greet', new HandlerGreet($s, 'Hello, %s!'));
+    // ...
+}
+```
+
+People who like OO will probably think this looks better anyway, and I understand. And I pity you. But! This is probably the simplest reasonable handler pattern you can get in PHP that type checks. It adds the unnecessary indirection of passing the server and format through the constructor to instance properties, but that's the worst of it.
+
+Because we're using such a simple interface you'd hope nobody who came to this code later would be tempted to create inheritance relationships between handlers. But you simply can't trust diehard—or inexperienced—OO devs. It should be obvious that a `Handler` is just a wrapper around a single function. It should be.
+
+It should be.
+
+#### Middleware
+
+[mr-http-service middleware](https://github.com/AndrewLivingston/mr-http-service/blob/main/middleware.go#L5-L28)
+
+Middleware is also easy to write simply in Go using decorators.
+
+```go
+// adminOnly is a decorator that simply passes along a HandlerFunc, first
+// ensuring the user has admin access
+func (s *server) adminOnly(h http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // can run code before calling wrapped handler h:
+        if !currentUser(r).IsAdmin {
+            http.NotFound(w, r)
+            return // don't call wrapped handler h at all
+        }
+        h(w, r)
+        // can also run code after calling wrapped handler h
+    }
+}
+
+// example of using middleware on an admin route:
+func (s *server) routes() {
+    s.router.Get("/admin", s.adminOnly(s.handleAdminIndex()))
+    // ...
+}
+```
+
+We can do almost as well with PHP at the expense of using an anonymous handler class.
+
+```php
+function adminOnly(Http\Handler $h): Http\Handler {
+    return new class($h) implements Http\Handler {
+        public function __construct(
+            private Http\Handler $h,
+        ) {}
+
+        public function serveHTTP(Http\ResponseWriter $w, Http\Request $r): void {
+            $h = $this->h;
+            $user = new CurrentUser($r);
+            if (! $user->IsAdmin) {
+                Http\notFound($w, $r);
+                return;
+            }
+            $h->serveHTTP($w, $r);
+        }
+    };
+}
+
+function routes(Server $s): void {
+    $s->router->get('/admin', adminOnly(new HandlerAdminIndex($s)));
+}
+```
+
+Look at all those `Http\Handler`s peppering that code...
+
+This works just fine, but anonymous classes aren't fun to see in stack traces. Likely we'd make a named handler class instead.
+
+```php
+function adminOnly(Http\Handler $h): Http\Handler {
+    return new _HandlerMiddlewareAdminOnly($h);
+}
+
+class _HandlerMiddlewareAdminOnly implements Http\Handler {
+    public function __construct(
+        private Http\Handler $h,
+    ) {}
+
+    public function serveHTTP(Http\ResponseWriter $w, Http\Request $r): void {
+        $h = $this->h;
+        $user = new CurrentUser($r);
+        if (! $user->IsAdmin) {
+            Http\notFound($w, $r);
+            return;
+        }
+        $h->serveHTTP($w, $r);
+    }
+}
+```
+
+Once again PHP proves that it's able to add more complexity than Go at the expense of more verbosity. But I like this well enough.
+
+Either way I'll never have to see a handler class for middleware show up directly in `routes`.
+
+#### But would you really rewrite Go standard library interfaces in PHP?
+
+My answer is an unqualified yes. Let me show you one of my other favorite things in Go's standard library.
+
+```go
+package io
+
+// Writer is the interface that wraps the basic Write method.
+//
+// Write writes len(p) bytes from p to the underlying data stream.
+// It returns the number of bytes written from p (0 <= n <= len(p))
+// and any error encountered that caused the write to stop early.
+// Write must return a non-nil error if it returns n < len(p).
+// Write must not modify the slice data, even temporarily.
+//
+// Implementations must not retain p.
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+```
+
+This is the source for `io.Writer`. Because Go got interfaces right its standard library contains some of the most beautiful abstractions I've ever seen, and `io.Writer` is one of the best of a good bunch.
+
+`io.Writer` unifies all notions of output behind a single abstraction: taking some bytes and ejecting them out somehwere in the wider world. And because it's used everywhere in the standard library, you'll discover that _Go's standard library is far more reusable than any dynamic language's standard library._ Static typing combined with a desire for flexibility forced interfaces on Go, and interfaces forced awesomeness on the standard library.
+
+For example, the `fmt` package includes this function:
+```go
+func Fprint(w io.Writer, a ...interface{}) (n int, err error)
+```
+
+This means that you can write your own `io.Writer` that, say, outputs text to a giant laser pointed at the moon and write your own name up there using only the print functions in Go's standard library.
+
+```go
+fmt.Fprint(w, "PROPERTY OF ELON MUSK")
+```
+
+Hey, Python, where's my `fprint(writer, *vals)`?? You're dynamic. You're duck-typed. Isn't this the kind of abstraction people who defend dynamic languages would point to as an advantage of dynamism?
+
+Python could easily have an `fprint`. But it doesn't—possibly _because_ it's dynamic. Without restrictions, without boundaries, creativity suffers. Static typing forced Go to think very carefully about abstractions, and as a result (and because Go is _very_ smart) it came up with a perfected notion of interface (the first such?). And as a result of that, we have `io.Writer`.
+
+(There are also the expected `fmt.Print` functions that will let Elon Musk claim stdout as his property.)
+
+I'm not actually ragging on Python. It was invented roughly a million years ago and it still has better abstractions and a better standard library than three quarters of the languages invented since, including many statically typed languages with some borked notion of interface. That's a hell of a legacy. And it's still my second favorite dynamic language behind Clojure.
+
+(Much of what I like about both of them is their awesome literal syntax for data types. Where's my set literal literally _every other programming language,_ including Go?)
