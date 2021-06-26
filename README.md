@@ -586,4 +586,4 @@ Python could easily have an `fprint`. But it doesn't—possibly _because_ it's d
 
 I'm not actually ragging on Python. It was invented roughly a million years ago and it still has better abstractions and a better standard library than three quarters of the languages invented since, including many statically typed languages with some borked notion of interface. That's a hell of a legacy. And it's still my second favorite dynamic language behind Clojure.
 
-(Much of what I like about both of them is their awesome literal syntax for data types. Where's my set literal literally _every other programming language,_ including Go?)
+(Much of what I like about both of them are their data types and the literal syntax for those types. _Where's my set literal literally every other programming language?_)
