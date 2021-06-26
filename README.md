@@ -578,12 +578,61 @@ This means that you can write your own `io.Writer` that, say, outputs text to a 
 fmt.Fprint(w, "PROPERTY OF ELON MUSK")
 ```
 
-Hey, Python, where's my `fprint(writer, *vals)`?? You're dynamic. You're duck-typed. Isn't this the kind of abstraction people who defend dynamic languages would point to as an advantage of dynamism?
+### How would you write io.Writer in PHP?
 
-Python could easily have an `fprint`. But it doesn't—possibly _because_ it's dynamic. Without restrictions, without boundaries, creativity suffers. Static typing forced Go to think very carefully about abstractions, and as a result (and because Go is _very_ smart) it came up with a perfected notion of interface (the first such?). And as a result of that, we have `io.Writer`.
+You might be tempted to do a naive translation.
 
-(There are also the expected `fmt.Print` functions that will let Elon Musk claim stdout as his property.)
+#### Go
+```go
+package io
 
-I'm not actually ragging on Python. It was invented roughly a million years ago and it still has better abstractions and a better standard library than three quarters of the languages invented since, including many statically typed languages with some borked notion of interface. That's a hell of a legacy. And it's still my second favorite dynamic language behind Clojure.
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+```
 
-(Much of what I like about both of them are their data types and the literal syntax for those types. _Where's my set literal literally every other programming language?_)
+Go's `byte` type is just an alias for an 8-bit integer, so `[]byte` is an array of 8-bit integers. Go allows type conversion to `[]byte` by calling the type as if it were a function.
+
+```go
+bytes := []byte("ABCDEF")
+fmt.Println(bytes)
+// [65 66 67 68 69 70]
+
+bytesWritten, _ = myWriter.Write(bytes)
+fmt.Println(bytesWritten)
+// 6
+```
+
+Note that we're dealing with ASCII characters here, but Go does have relatively graceful ways to deal with unicode in this context.
+
+
+#### PHP
+```php
+namespace Io;
+
+interface Writer {
+    public function write(int ...$bytes): int;
+}
+```
+
+This is equivalent to Go's interface except that instead of taking a single array of integers, it's taking a variable array of integers. This is because you can't declare element types in an array.
+
+PHP is a language without arrays. A PHP `array` is not an array at all: it's a hash table that may have either string or integer keys. This is possibly the worst thing about the language, and it certainly is a problem here. Hash tables are _massive._
+
+PHP instead prefers to deal with raw data as strings which, since the PHP interpreter is written in C, are basically wrapped C strings. I.e., they are arrays of single-byte integers just like Go's  `[]byte`. So it should come as no surprise that php uses strings for raw bytes, and it has a pair of functions, `pack` and `unpack`, that allow you to convert other data types to strings for writing to binary files or streams. Therefore, the `Writer` interface in PHP would likely just deal with strings.
+
+```php
+namespace Io;
+
+interface Writer {
+    public function write(string $data): int;
+}
+```
+
+And this is what PHP does.
+
+```php
+fwrite(resource $handle, string $string, int $length = ?): int;
+```
+
+(PHP, like some other languages, treats streams as files, hence `"f"write`.)
