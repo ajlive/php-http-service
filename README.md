@@ -625,7 +625,7 @@ PHP instead prefers to deal with raw data as strings which, since the PHP interp
 namespace Io;
 
 interface Writer {
-    public function write(string $data): int;
+    public function write(string $p): int;
 }
 ```
 
@@ -636,3 +636,15 @@ fwrite(resource $handle, string $string, int $length = ?): int;
 ```
 
 (PHP, like some other languages, treats streams as files, hence `"f"write`.)
+
+`Writer` may seem less useful than `fwrite`, since it requires you manage write length manually, but that's because it's far more general.
+
+```php
+class Logger implements Io\Writer {
+
+    public function write(string $p): int {
+        $wrote = error_log($p)
+        return strlen($p);
+    }
+}
+```
