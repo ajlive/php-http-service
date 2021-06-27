@@ -563,7 +563,7 @@ type Writer interface {
 }
 ```
 
-This is the source for `io.Writer`. Because Go got interfaces right its standard library contains some of the most beautiful abstractions I've ever seen, and `io.Writer` is one of the best of a good bunch.
+This is the source for `io.Writer` (<https://golang.org/pkg/io/#Writer>; click on the type name "Writer" to go to the source code). Because Go got interfaces right its standard library contains some of the most beautiful abstractions I've ever seen, and `io.Writer` is one of the best of a good bunch.
 
 `io.Writer` unifies all notions of output behind a single abstraction: taking some bytes and ejecting them out somehwere in the wider world. And because it's used everywhere in the standard library, you'll discover that _Go's standard library is far more reusable than any dynamic language's standard library._ Static typing combined with a desire for flexibility forced interfaces on Go, and interfaces forced awesomeness on the standard library.
 
@@ -640,11 +640,186 @@ fwrite(resource $handle, string $string, int $length = ?): int;
 `Writer` may seem less useful than `fwrite`, since it requires you manage write length manually, but that's because it's far more general.
 
 ```php
-class Logger implements Io\Writer {
+class ErrorLogger implements Io\Writer {
 
     public function write(string $p): int {
         $wrote = error_log($p)
+        if ($wrote === false) {
+            return 0;
+        }
         return strlen($p);
     }
+
+}
+```
+
+It may seem silly to go to the effort of returning a value you already know in the above, but returning the number of bytes written is important for other kinds of `Writer`, like file writers.
+
+And that is the number of bytes. Despite accepting unicode strings in source code, PHP's `strlen` ignores multi-byte encoding. That's terrible for nearly everything you have to do with strings on a day to day basis, so as an afterthought PHP added an `mb_strlen` function to deal with unicode that nobody ever remembers to use. It's a development nightmare, but `strlen` is, in fact, what we need here.
+
+So, okay, _other_ writers might need to know how many bytes they're writing, but why bother making something like `ErrorLogger` implement such a general interface as `Writer`?
+
+```php
+class MyApp {
+
+    public function log(string $msg, Io\Writer ...$writers): void {
+        $totalBytes = strlen($msg);
+        foreach ($writers as $w) {
+            $bytesWritten = $w.write($msg);
+            if ($bytesWritten < $totalBytes) {
+                throw new Exception(
+                    "O noes! " . get_class($w) . " only wrote "
+                    . "{$bytesWritten}/{$totalBytes} bytes in \"{$msg}\""
+                );
+            }
+        }
+    }
+}
+```
+
+And there you go. But you could go further. There's nothing specific to logging in that function. It could easily be extracted out into a library. This is how you'd do it if following Go's standard library.
+
+```php
+namespace Io;
+
+class MultiWriter implements Writer {
+    private array $writers;
+
+    public function __construct(Writer ...$writers) {
+        $this->writers = $writers;
+    }
+
+    public function write(string $p): int {
+        $writers = $this->writers;
+        $totalBytes = strlen($msg);
+
+        foreach ($writers as $w) {
+            $bytesWritten = $w.write($msg);
+            if ($bytesWritten < $totalBytes) {
+                throw new Exception( /* ... */);
+            }
+        }
+
+        return $totalBytes;
+    }
+}
+
+// ---
+
+namespace Fmt;
+
+function fprintln(Io\Writer $w): int;
+
+// ---
+
+namespace My;
+
+class App {
+    public Io\MultiWriter $mWriter;
+
+    public function __construct(Io\Writer ...$writers) {
+        $this->mWriter = new Io\MultiWriter(...$writers);
+    }
+
+    public function log($msg) {
+        try {
+            $this->mWriter->write($msg);
+        } catch (\Throwable $e) {
+            // ...
+        }
+    }
+}
+```
+
+The `MultiWriter` class is a PHP-ic version of Go's `multWriter` type, which is used via the `MultiWriter` function: <https://golang.org/pkg/io/#MultiWriter>. You can click the function name "MultiWriter" to see the source, but it's more interesting to look at the `mutliWriter` type's `Write` method: <https://golang.org/src/io/multi.go?s=1441:1500#L49>
+
+It's not always easy to tell when an abstraction is bad or premature without usage examples. If a colleague at your PHP shop came up to you with wild eyes and shaking hands and said, "Look what I came up with to _unify all our things_," you'd probably look at `Io\Writer`, smile and nod while backing away, and then make a break for it.
+
+Luckily, With Go's `io.Writer`, there's a programming language's worth of open-source code out there full of examples, and on top of that the entire Go community cannot shut up about how great `io.Writer` (and its sibling `io.Reader`) are. A handful of examples:
+
+* [The Beauty of io.Writer](https://www.grant.pizza/blog/the-beauty-of-io-writer/)
+* [The beauty of io.Reader in Go](https://www.yellowduck.be/posts/the-beauty-of-io-reader-in-go/)
+* [io.Reader in depth](https://medium.com/@matryer/golang-advent-calendar-day-seventeen-io-reader-in-depth-6f744bb4320b) (Mat Ryer; the mission statement is: "This article aims to convince you to use io.Reader in your own code wherever you can.")
+
+### One last improvement to the PHP Io\Writer
+
+Looking at the [source code for `io.multiWriter::Write`](https://golang.org/src/io/multi.go?s=1441:1500#L49), you may have noticed that `io.Writer` is another Go function that, because errors are values, may partially succeed. You'll sometimes get an error, but you'll always get a number of bytes written, and so the `multiWriter::Write` method has to check both possibilities.
+
+```go
+n, err = w.Write(p)
+if err != nil {
+    return n, err // replaced implicit returns with explicit for clarity
+}
+if n != len(p) {
+    err = ErrShortWrite
+    return n, err
+}
+```
+
+This second check catches violations of the convention imposed on implementations in the documentation for `Writer`:
+
+> Write writes `len(p)` bytes from `p` to the underlying data stream. It returns the number of bytes written from `p (0 <= n <= len(p))` and any error encountered that caused the write to stop early. Write must return a non-`nil` error if it returns `n < len(p)`.
+
+So while a `Writer` is not _supposed_ to return `n < len(p)` without an error, you might fuck up and forget to return an error, in which case `multiWriter::Write` has you covered.
+
+PHP functions can't partially succeed, but we can provide roughly the same behavior in our PHP version.
+
+```php
+namespace Io;
+
+interface WriteError extends Throwable {
+    public function bytesWritten(): int;
+}
+
+interface Writer {
+    /**
+     * write writes len($p) bytes from $p (a string or other data packed or
+     * serialized into a string) to some resource. write must throw a WriteError
+     * if the number of bytes written is less than len($p)
+     *
+     * @return int The number of bytes written, n
+     *
+     * @throws WriteError If the nubmer of bytes written, n, is < len($p)
+     */
+    public function write(string $p): int;
+}
+
+// ...
+
+class MultiWriterError implements WriteError {
+    private int $_bytesWritten;
+
+    public function __construct(int $bytesWritten, $msg = 'short write') {
+        $this->_bytesWritten = $bytesWritten;
+        parent::__construct($msg);
+    }
+
+    public function bytesWritten(): int {
+        return $this->_bytesWritten;
+    }
+}
+```
+
+Then loop in `Io\MultiWriter::write` will now work in an analogous way to its Go counterpart without modification.
+
+```php
+foreach ($writers as $w) {
+    $bytesWritten = $w.write($msg);
+    // ^ should throw a WriteError
+    if ($bytesWritten < $totalBytes) {
+        // ^ but if $w.write doesn't throw, we've got your back
+        throw new MultiWriterError($bytesWritten);
+    }
+}
+```
+
+Then we can simply catch an `Io\WriteError` in code using `Io\Writer` or `Io\MultiWriter` and still get the number of bytes written, just as in Go.
+
+```php
+try {
+    $writer->write($data);
+} catch (Io\WriteError $e) {
+    $writeRatio = $e->bytesWritten() . '/' . strlen($data);
+    error_log($e->getMessage() . ", wrote {$writeRatio} bytes";
 }
 ```
